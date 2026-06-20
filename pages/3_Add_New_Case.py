@@ -10,130 +10,58 @@ if not is_authenticated():
 
 st.title("Add New Case")
 
+# ── How to find CNR ────────────────────────────────────────────────────────
+with st.expander("ℹ️ How to find the CNR number for a case", expanded=False):
+    st.markdown("""
+**CNR (Case Number Record)** is the unique identifier used by the eCourts system for every case.
 
-# ── Dropdown data (cached 1 hour) ──────────────────────────────────────────
+**To find the CNR:**
+1. Go to [ecourtsindia.com → Ecourts Search](https://ecourtsindia.com/dashboard/ecourts-search)
+2. Search by petitioner name, respondent name, or case number
+3. Click on the case — the CNR is shown at the top (e.g. `DLHC010004222025`)
+4. Copy and paste it below
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_court_options() -> dict[str, str]:
-    """Returns {display_name: court_code} from API enums."""
-    try:
-        api = EcourtsClient()
-        enums = api.get_enums()
-        courts = enums.get("courtCode", [])
-        if courts:
-            return {
-                c["description"]: c["code"]
-                for c in courts
-                if c["code"] not in ("UNKNOWN", "") and c.get("description")
-            }
-    except Exception:
-        pass
-    # Hardcoded fallback with verified court codes
-    return {
-        "High Court of Andhra Pradesh, Amaravati": "APHC01",
-        "Patna High Court, Bihar": "BRHC01",
-        "High Court of Chhattisgarh, Bilaspur": "CGHC01",
-        "High Court of Delhi, Delhi": "DLHC01",
-        "High Court for the State of Telangana, Hyderabad": "HBHC01",
-        "Bombay High Court, Mumbai": "HCBM01",
-        "Madras High Court, Chennai": "HCMA01",
-        "Jharkhand High Court, Ranchi": "JHHC01",
-        "High Court of Karnataka, Bengaluru": "KAHC01",
-        "Calcutta High Court, West Bengal": "WBHC01",
-        "Gauhati High Court, Gauhati Bench": "GAHC01",
-        "High Court of Gujarat, Ahmedabad": "GJHC24",
-    }
+Alternatively, the CNR is printed on court notices and cause list entries.
+""")
 
+# ── CNR Search ─────────────────────────────────────────────────────────────
+st.subheader("Step 1: Enter CNR Number")
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_case_type_options() -> list[tuple[str, str]]:
-    """Returns list of (display_label, code) from API enums."""
-    try:
-        api = EcourtsClient()
-        enums = api.get_enums()
-        types = enums.get("caseType", [])
-        if types:
-            return sorted(
-                [(f"{c['description']} ({c['code']})", c["code"])
-                 for c in types
-                 if c["code"] not in ("UNKNOWN", "") and c.get("description")],
-                key=lambda x: x[0],
-            )
-    except Exception:
-        pass
-    return [
-        ("Anticipatory Bail Application (ABA)", "ABA"),
-        ("Arbitration Case / DC (Arb)", "Arb"),
-        ("Arbitration Petition (Arb_Pet)", "Arb_Pet"),
-        ("Civil Appeal (CA)", "CA"),
-        ("Civil Miscellaneous Appeal (CMA)", "CMA"),
-        ("Company Petition (COP)", "COP"),
-        ("Commercial Suit (COM_S)", "COM_S"),
-        ("Execution Petition (EP)", "EP"),
-        ("Miscellaneous Application (MA)", "MA"),
-        ("Original Miscellaneous Petition (OMP)", "OMP"),
-        ("Writ Appeal (WA)", "WA"),
-        ("Writ Petition (WP)", "WP"),
-    ]
+with st.form("cnr_search"):
+    cnr_input = st.text_input(
+        "CNR Number",
+        placeholder="e.g. DLHC010004222025",
+        help="16-character unique case identifier from eCourts"
+    ).strip().upper()
 
-
-court_options = load_court_options()
-case_type_options = load_case_type_options()
-
-# ── Step 1: Search form ────────────────────────────────────────────────────
-st.subheader("Step 1: Enter case details")
-
-with st.form("case_search"):
-    col1, col2 = st.columns(2)
-
+    col1, col2 = st.columns([3, 1])
     with col1:
-        court_names = list(court_options.keys())
-        selected_court_name = st.selectbox(
-            "Court",
-            options=court_names,
-            index=None,
-            placeholder="Select a court…",
+        submitted = st.form_submit_button(
+            "Fetch Case Details", type="primary", use_container_width=True
         )
-        case_number = st.text_input(
-            "Case Number",
-            placeholder="e.g. 422",
-            help="Enter the numeric case number only (e.g. 422 for OMP 422/2025)",
-        )
-
     with col2:
-        type_labels = [label for label, _ in case_type_options]
-        type_codes  = [code  for _, code  in case_type_options]
-        selected_type_label = st.selectbox(
-            "Case Type",
-            options=type_labels,
-            index=None,
-            placeholder="Select case type…",
+        st.link_button(
+            "Search on eCourtsIndia →",
+            "https://ecourtsindia.com/dashboard/ecourts-search",
+            use_container_width=True,
         )
-        year = st.number_input("Year", min_value=1990, max_value=2030, value=2025, step=1)
-
-    submitted = st.form_submit_button(
-        "Search eCourts", type="primary", use_container_width=True
-    )
 
 if submitted:
-    if not all([selected_court_name, selected_type_label, case_number, year]):
-        st.error("All four fields are required.")
+    if not cnr_input:
+        st.error("Please enter a CNR number.")
+        st.stop()
+    if len(cnr_input) < 10:
+        st.error("CNR looks too short — it should be at least 10 characters.")
         st.stop()
 
-    court_code = court_options[selected_court_name]
-    case_type  = type_codes[type_labels.index(selected_type_label)]
-
-    with st.spinner("Looking up case on eCourts…"):
+    with st.spinner("Fetching from eCourts…"):
         try:
             api = EcourtsClient()
-            detail: CaseDetail | None = api.search_case(
-                court_code, case_type, case_number.strip(), int(year)
-            )
+            detail: CaseDetail | None = api.get_case_by_cnr(cnr_input)
             if detail is None:
                 st.warning(
-                    f"No case found for **{case_number}/{year}** at **{selected_court_name}**. "
-                    "Please verify the case number and year. Note that not all courts have "
-                    "digitised records on eCourts."
+                    f"No case found for CNR `{cnr_input}`. "
+                    "Please double-check the number — CNRs are case-sensitive and must be exact."
                 )
                 st.stop()
             st.session_state["search_result"] = detail
@@ -141,7 +69,7 @@ if submitted:
             st.error(f"API error: {e}")
             st.stop()
 
-# ── Step 2: Preview ────────────────────────────────────────────────────────
+# ── Preview ────────────────────────────────────────────────────────────────
 if "search_result" in st.session_state:
     detail: CaseDetail = st.session_state["search_result"]
 
@@ -150,20 +78,21 @@ if "search_result" in st.session_state:
 
     with st.container(border=True):
         col1, col2 = st.columns(2)
+        col1.markdown(f"**CNR:** `{detail.cnr}`")
         col1.markdown(f"**Court:** {detail.court_name}")
         col1.markdown(f"**State:** {detail.state}")
         col1.markdown(f"**Case Type:** {detail.case_type}")
         col1.markdown(f"**Case Number:** {detail.case_number}")
-        col1.markdown(f"**Filing Date:** {detail.filing_date or '—'}")
         col2.markdown(f"**Petitioner:** {detail.petitioner or '—'}")
         col2.markdown(f"**Respondent:** {detail.respondent or '—'}")
         col2.markdown(f"**Judge:** {detail.judge or '—'}")
+        col2.markdown(f"**Filing Date:** {detail.filing_date or '—'}")
         col2.markdown(f"**Next Hearing (NDOH):** {detail.next_hearing_date or '—'}")
         col2.markdown(f"**Status:** {detail.court_status or '—'}")
 
     if detail.hearings:
         with st.expander(f"📅 Hearing History ({len(detail.hearings)} dates)"):
-            for h in detail.hearings:
+            for h in sorted(detail.hearings, key=lambda x: x.hearing_date, reverse=True):
                 st.caption(f"{h.hearing_date} — {h.purpose}")
 
     if detail.orders:
@@ -171,12 +100,7 @@ if "search_result" in st.session_state:
             for o in detail.orders:
                 st.caption(f"{o.order_date}")
 
-    st.warning(
-        "⚠️ If the details above don't match your case, the case number or year "
-        "may be slightly different in the eCourts system. Try adjusting and searching again."
-    )
-
-    if st.button("← Search Again", type="secondary"):
+    if st.button("← Wrong case? Search again", type="secondary"):
         del st.session_state["search_result"]
         st.rerun()
 
@@ -192,7 +116,9 @@ if "search_result" in st.session_state:
             amount_at_stake = st.number_input(
                 "Amount at Stake (₹)", min_value=0.0, step=100000.0, format="%.0f"
             )
-            lawyer_status = st.selectbox("Your Status", ["Active", "Pending-TBF", "Disposed"])
+            lawyer_status = st.selectbox(
+                "Your Status", ["Active", "Pending-TBF", "Disposed"]
+            )
 
         background_notes = st.text_area(
             "Background Notes", placeholder="Brief background of the case…"
