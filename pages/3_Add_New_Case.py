@@ -1,7 +1,7 @@
 import streamlit as st
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from lib.auth import is_authenticated, render_login_page
-from lib.db import save_case, upsert_hearing_history, upsert_orders
+from lib.db import save_case, upsert_hearing_history
 from lib.ecourts_client import EcourtsClient, CaseDetail
 
 if not is_authenticated():
@@ -10,173 +10,146 @@ if not is_authenticated():
 
 st.title("Add New Case")
 
-# ── How to find CNR ────────────────────────────────────────────────────────
-with st.expander("ℹ️ How to find the CNR number for a case", expanded=False):
-    st.markdown("""
-**CNR (Case Number Record)** is the unique identifier used by the eCourts system for every case.
+# ── Court options (cached from API enums) ──────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_court_options() -> dict[str, str]:
+    try:
+        api = EcourtsClient()
+        enums = api.get_enums()
+        courts = enums.get("courtCode", [])
+        if courts:
+            return {c["description"]: c["code"] for c in courts if c["code"] not in ("UNKNOWN", "") and c.get("description")}
+    except Exception:
+        pass
+    return {
+        "High Court of Andhra Pradesh, Amaravati": "APHC01",
+        "Patna High Court, Bihar": "BRHC01",
+        "High Court of Chhattisgarh, Bilaspur": "CGHC01",
+        "High Court of Delhi, Delhi": "DLHC01",
+        "High Court for the State of Telangana, Hyderabad": "HBHC01",
+        "Bombay High Court, Mumbai": "HCBM01",
+        "Madras High Court, Chennai": "HCMA01",
+        "Jharkhand High Court, Ranchi": "JHHC01",
+        "High Court of Karnataka, Bengaluru": "KAHC01",
+        "Calcutta High Court, West Bengal": "WBHC01",
+        "Commercial Court Hyderabad": "COMHYD",
+        "District Court Visakhapatnam": "DCVIZ",
+        "NCLT Calcutta": "NCLTCAL",
+        "NCLAT New Delhi": "NCLAT",
+        "CGIT Dhanbad": "CGITDHN",
+        "MSME Facilitation Council Ranchi": "MSMERN",
+        "MP State Tribunal Bhopal": "MPSTB",
+        "Commercial Court Raipur": "COMRPR",
+    }
 
-**To find the CNR:**
-1. Go to [ecourtsindia.com → Ecourts Search](https://ecourtsindia.com/dashboard/ecourts-search)
-2. Search by petitioner name, respondent name, or case number
-3. Click on the case — the CNR is shown at the top (e.g. `DLHC010004222025`)
-4. Copy and paste it below
+court_options = load_court_options()
+court_names = list(court_options.keys())
 
-Alternatively, the CNR is printed on court notices and cause list entries.
-""")
+# ── Case details form ──────────────────────────────────────────────────────
+st.subheader("Case Details")
 
-# ── CNR Search ─────────────────────────────────────────────────────────────
-st.subheader("Step 1: Enter CNR Number")
+with st.form("add_case_form"):
 
-with st.form("cnr_search"):
-    cnr_input = st.text_input(
-        "CNR Number",
-        placeholder="e.g. DLHC010004222025",
-        help="16-character unique case identifier from eCourts"
-    ).strip().upper()
-
-    col1, col2 = st.columns([3, 1])
+    # Row 1 — Court + Forum details
+    col1, col2, col3 = st.columns([3, 2, 1])
     with col1:
-        submitted = st.form_submit_button(
-            "Fetch Case Details", type="primary", use_container_width=True
-        )
+        selected_court = st.selectbox("Court / Forum", options=court_names, index=None, placeholder="Select court…")
     with col2:
-        st.link_button(
-            "Search on eCourtsIndia →",
-            "https://ecourtsindia.com/dashboard/ecourts-search",
-            use_container_width=True,
-        )
+        case_type = st.text_input("Case Type", placeholder="e.g. OMP (COMM.), W.P, COP")
+    with col3:
+        year = st.number_input("Year", min_value=1990, max_value=2030, value=2025, step=1)
 
-if submitted:
-    if not cnr_input:
-        st.error("Please enter a CNR number.")
-        st.stop()
-    if len(cnr_input) < 10:
-        st.error("CNR looks too short — it should be at least 10 characters.")
-        st.stop()
-
-    with st.spinner("Fetching from eCourts…"):
-        try:
-            api = EcourtsClient()
-            detail: CaseDetail | None = api.get_case_by_cnr(cnr_input)
-            if detail is None:
-                st.warning(
-                    f"No case found for CNR `{cnr_input}`. "
-                    "Please double-check the number — CNRs are case-sensitive and must be exact."
-                )
-                st.stop()
-            st.session_state["search_result"] = detail
-        except Exception as e:
-            st.error(f"API error: {e}")
-            st.stop()
-
-# ── Preview ────────────────────────────────────────────────────────────────
-if "search_result" in st.session_state:
-    detail: CaseDetail = st.session_state["search_result"]
+    col1, col2 = st.columns(2)
+    with col1:
+        case_number = st.text_input("Case Number", placeholder="e.g. 422")
+    with col2:
+        client_name = st.text_input("Client Name", placeholder="e.g. MBECL")
 
     st.divider()
-    st.subheader("Step 2: Confirm case details")
 
-    with st.container(border=True):
-        col1, col2 = st.columns(2)
-        col1.markdown(f"**CNR:** `{detail.cnr}`")
-        col1.markdown(f"**Court:** {detail.court_name}")
-        col1.markdown(f"**State:** {detail.state}")
-        col1.markdown(f"**Case Type:** {detail.case_type}")
-        col1.markdown(f"**Case Number:** {detail.case_number}")
-        col2.markdown(f"**Petitioner:** {detail.petitioner or '—'}")
-        col2.markdown(f"**Respondent:** {detail.respondent or '—'}")
-        col2.markdown(f"**Judge:** {detail.judge or '—'}")
-        col2.markdown(f"**Filing Date:** {detail.filing_date or '—'}")
-        col2.markdown(f"**Next Hearing (NDOH):** {detail.next_hearing_date or '—'}")
-        col2.markdown(f"**Status:** {detail.court_status or '—'}")
+    # Row 2 — Parties
+    col1, col2 = st.columns(2)
+    with col1:
+        petitioner = st.text_input("Petitioner", placeholder="e.g. The Singareni Collieries Company Limited")
+    with col2:
+        respondent = st.text_input("Respondent", placeholder="e.g. McNally Bharat Engineering Company Limited")
 
-    if detail.hearings:
-        with st.expander(f"📅 Hearing History ({len(detail.hearings)} dates)"):
-            for h in sorted(detail.hearings, key=lambda x: x.hearing_date, reverse=True):
-                st.caption(f"{h.hearing_date} — {h.purpose}")
-
-    if detail.orders:
-        with st.expander(f"📄 Orders ({len(detail.orders)} found)"):
-            for o in detail.orders:
-                st.caption(f"{o.order_date}")
-
-    if st.button("← Wrong case? Search again", type="secondary"):
-        del st.session_state["search_result"]
-        st.rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        judge = st.text_input("Judge", placeholder="e.g. Hon. Justice ABC")
+    with col2:
+        local_counsel = st.text_input("Local Counsel", placeholder="e.g. Adv. Sharma")
 
     st.divider()
-    st.subheader("Step 3: Add your notes")
 
-    with st.form("save_case"):
-        col1, col2 = st.columns(2)
-        with col1:
-            client_name = st.text_input("Client Name", placeholder="e.g. MBECL")
-            local_counsel = st.text_input("Local Counsel", placeholder="e.g. Adv. Sharma")
-        with col2:
-            amount_at_stake = st.number_input(
-                "Amount at Stake (₹)", min_value=0.0, step=100000.0, format="%.0f"
-            )
-            lawyer_status = st.selectbox(
-                "Your Status", ["Active", "Pending-TBF", "Disposed"]
-            )
+    # Row 3 — Dates and status
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        filing_date = st.date_input("Filing Date", value=None)
+    with col2:
+        next_hearing_date = st.date_input("Next Hearing Date (NDOH)", value=None)
+    with col3:
+        lawyer_status = st.selectbox("Status", ["Active", "Pending-TBF", "Disposed"])
 
-        background_notes = st.text_area(
-            "Background Notes", placeholder="Brief background of the case…"
-        )
-        action_items = st.text_area(
-            "Action Items", placeholder="What needs to happen next…"
-        )
+    col1, col2 = st.columns(2)
+    with col1:
+        court_status = st.text_input("Court Status", placeholder="e.g. Pending, Disposed")
+    with col2:
+        amount_at_stake = st.number_input("Amount at Stake (₹)", min_value=0.0, step=100000.0, format="%.0f")
 
-        save_submitted = st.form_submit_button(
-            "Save Case", type="primary", use_container_width=True
-        )
+    st.divider()
 
-    if save_submitted:
-        case_data = {
-            "cnr": detail.cnr,
-            "court_code": detail.court_code,
-            "case_type": detail.case_type,
-            "case_number": detail.case_number,
-            "year": int(detail.year),
-            "court_name": detail.court_name,
-            "state": detail.state,
-            "petitioner": detail.petitioner,
-            "respondent": detail.respondent,
-            "judge": detail.judge,
-            "filing_date": detail.filing_date,
-            "next_hearing_date": detail.next_hearing_date,
-            "court_status": detail.court_status,
-            "client_name": client_name or None,
-            "amount_at_stake": float(amount_at_stake) if amount_at_stake else None,
-            "local_counsel": local_counsel or None,
-            "background_notes": background_notes or None,
-            "action_items": action_items or None,
-            "lawyer_status": lawyer_status,
-            "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
-        }
-        try:
-            saved = save_case(case_data)
+    # Row 4 — Notes
+    background_notes = st.text_area(
+        "Background",
+        placeholder="Brief background of the case…",
+        height=100,
+    )
+    action_items = st.text_area(
+        "Remarks / Action Items",
+        placeholder="Current status and what needs to happen next…",
+        height=100,
+    )
 
-            if detail.hearings:
-                upsert_hearing_history(
-                    saved["id"],
-                    [{"hearing_date": h.hearing_date,
-                      "purpose": h.purpose,
-                      "outcome": h.outcome}
-                     for h in detail.hearings],
-                )
-            if detail.orders:
-                upsert_orders(
-                    saved["id"],
-                    [{"order_date": o.order_date,
-                      "order_number": o.order_number,
-                      "pdf_url": o.pdf_url}
-                     for o in detail.orders],
-                )
+    save_submitted = st.form_submit_button("Save Case", type="primary", use_container_width=True)
 
-            del st.session_state["search_result"]
-            st.success("Case saved successfully!")
-            st.query_params["case_id"] = saved["id"]
-            st.switch_page("pages/4_Case_Detail.py")
-        except Exception as e:
-            st.error(f"Failed to save case: {e}")
+if save_submitted:
+    if not selected_court:
+        st.error("Please select a court.")
+        st.stop()
+    if not case_number:
+        st.error("Please enter a case number.")
+        st.stop()
+
+    court_code = court_options.get(selected_court, "")
+
+    case_data = {
+        "court_code": court_code,
+        "case_type": case_type or None,
+        "case_number": case_number,
+        "year": int(year),
+        "court_name": selected_court,
+        "state": None,
+        "petitioner": petitioner or None,
+        "respondent": respondent or None,
+        "judge": judge or None,
+        "filing_date": filing_date.isoformat() if filing_date else None,
+        "next_hearing_date": next_hearing_date.isoformat() if next_hearing_date else None,
+        "court_status": court_status or None,
+        "client_name": client_name or None,
+        "amount_at_stake": float(amount_at_stake) if amount_at_stake else None,
+        "local_counsel": local_counsel or None,
+        "background_notes": background_notes or None,
+        "action_items": action_items or None,
+        "lawyer_status": lawyer_status,
+        "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
+        "cnr": None,
+    }
+
+    try:
+        saved = save_case(case_data)
+        st.success(f"Case {case_number}/{year} saved successfully!")
+        st.query_params["case_id"] = saved["id"]
+        st.switch_page("pages/4_Case_Detail.py")
+    except Exception as e:
+        st.error(f"Failed to save case: {e}")
