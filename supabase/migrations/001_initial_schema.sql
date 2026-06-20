@@ -43,7 +43,7 @@ create table cases (
 create table orders (
   id            uuid primary key default uuid_generate_v4(),
   case_id       uuid not null references cases(id) on delete cascade,
-  user_id       uuid not null references auth.users(id) on delete cascade,
+  user_id       uuid not null references auth.users(id) on delete restrict,
   order_date    date,
   order_number  text,
   pdf_url       text,
@@ -58,7 +58,7 @@ create table orders (
 create table hearing_history (
   id            uuid primary key default uuid_generate_v4(),
   case_id       uuid not null references cases(id) on delete cascade,
-  user_id       uuid not null references auth.users(id) on delete cascade,
+  user_id       uuid not null references auth.users(id) on delete restrict,
   hearing_date  date,
   purpose       text,
   outcome       text,
@@ -90,3 +90,13 @@ create policy "hearing_history: select own"  on hearing_history for select  usin
 create policy "hearing_history: insert own"  on hearing_history for insert  with check (auth.uid() = user_id);
 create policy "hearing_history: update own"  on hearing_history for update  using (auth.uid() = user_id);
 create policy "hearing_history: delete own"  on hearing_history for delete  using (auth.uid() = user_id);
+
+-- ============================================================
+-- INDEXES
+-- ============================================================
+create index idx_cases_user_id        on cases(user_id);
+create index idx_cases_ndoh           on cases(next_hearing_date);
+create index idx_orders_case_id       on orders(case_id);
+create index idx_orders_user_id       on orders(user_id);
+create index idx_hearing_case_id      on hearing_history(case_id);
+create index idx_hearing_user_id      on hearing_history(user_id);
