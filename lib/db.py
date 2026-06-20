@@ -85,7 +85,7 @@ def upsert_orders(case_id: str, orders: list[dict]) -> None:
 
 def update_order_summary(order_id: str, summary: str) -> None:
     client = get_client()
-    client.table("orders").update({"ai_summary": summary}).eq("id", order_id).execute()
+    client.table("orders").update({"ai_summary": summary}).eq("id", order_id).eq("user_id", get_user_id()).execute()
 
 
 # ── Hearing History ────────────────────────────────────────────────────────

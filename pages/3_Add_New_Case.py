@@ -80,7 +80,7 @@ if "search_result" in st.session_state:
             "court_code": result.court_code,
             "case_type": result.case_type,
             "case_number": result.case_number,
-            "year": result.year,
+            "year": int(result.year),
             "court_name": result.court_name,
             "state": result.state,
             "petitioner": result.petitioner,
