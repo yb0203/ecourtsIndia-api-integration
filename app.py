@@ -1,5 +1,5 @@
 import streamlit as st
-from lib.auth import is_authenticated, render_login_page, logout, get_user_email
+from lib.auth import is_authenticated, render_login_page, logout, get_user_email, handle_oauth_callback
 
 st.set_page_config(
     page_title="Legal Dashboard",
@@ -7,6 +7,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Handle Google OAuth redirect callback before anything else
+if handle_oauth_callback():
+    st.rerun()
 
 if not is_authenticated():
     render_login_page()
