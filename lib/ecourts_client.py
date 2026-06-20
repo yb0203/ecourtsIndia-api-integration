@@ -10,7 +10,8 @@ BASE_URL = "https://webapi.ecourtsindia.com/api/partner"
 
 
 @dataclass
-class CaseSearchResult:
+class CaseDetail:
+    cnr: str
     court_code: str
     case_type: str
     case_number: str
@@ -23,7 +24,8 @@ class CaseSearchResult:
     filing_date: Optional[str]
     next_hearing_date: Optional[str]
     court_status: str
-    cnr: Optional[str] = None
+    orders: list
+    hearings: list
 
 
 @dataclass
@@ -41,96 +43,101 @@ class HearingRecord:
     outcome: str
 
 
+def build_cnr(court_code: str, case_number: str, year: int) -> str:
+    """
+    Construct a CNR from court code + case number + year.
+    Format: {6-char court code}{case number zero-padded to 6 digits}{4-digit year}
+    Example: DLHC01 + 000422 + 2025 → DLHC010004222025
+    """
+    # Ensure court_code is 6 chars (some codes are shorter like DLHC01)
+    code = court_code[:6].ljust(6)
+    # Strip non-numeric chars from case number for padding
+    num = "".join(filter(str.isdigit, case_number)).zfill(6)
+    return f"{code}{num}{year}"
+
+
 class EcourtsClient:
     def __init__(self) -> None:
         self.api_key = os.environ["ECOURTS_API_KEY"]
         self.headers = {"Authorization": f"Bearer {self.api_key}"}
 
-    def search_case(
-        self, court_code: str, case_type: str, case_number: str, year: int
-    ) -> Optional[CaseSearchResult]:
+    def get_case_by_cnr(self, cnr: str) -> Optional[CaseDetail]:
+        """Fetch full case data by CNR number."""
         resp = requests.get(
-            f"{BASE_URL}/search",
-            params={
-                "court_code": court_code,
-                "case_type": case_type,
-                "case_number": case_number,
-                "year": year,
-            },
+            f"{BASE_URL}/case/{cnr}",
             headers=self.headers,
             timeout=30,
         )
+        if resp.status_code == 404:
+            return None
         resp.raise_for_status()
         data = resp.json()
-        results = data.get("data", {}).get("results", [])
-        if not results:
+        if data.get("error"):
             return None
-        r = results[0]
-        return CaseSearchResult(
-            court_code=r.get("courtCode", court_code),
-            case_type=r.get("caseType", case_type),
-            case_number=case_number,
-            year=year,
-            court_name=r.get("courtName", ""),
-            state=r.get("stateCode", ""),
-            petitioner=", ".join(r.get("petitioners", [])),
-            respondent=", ".join(r.get("respondents", [])),
-            judge=", ".join(r.get("judges", [])),
-            filing_date=r.get("filingDate"),
-            next_hearing_date=r.get("nextHearingDate"),
-            court_status=r.get("caseStatus", ""),
-            cnr=r.get("cnr"),
-        )
+        raw = data.get("data", {}).get("courtCaseData", {})
+        if not raw:
+            return None
+        return self._parse_case_detail(cnr, raw)
 
-    def get_case_detail(self, cnr: str) -> dict:
-        resp = requests.get(
-            f"{BASE_URL}/case",
-            params={"cnr": cnr},
-            headers=self.headers,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json().get("data", {})
-
-    def refresh_case(
+    def search_case(
         self, court_code: str, case_type: str, case_number: str, year: int
-    ) -> dict:
-        resp = requests.post(
-            f"{BASE_URL}/refresh",
-            json={
-                "courtCode": court_code,
-                "caseType": case_type,
-                "caseNumber": case_number,
-                "year": year,
-            },
-            headers=self.headers,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json().get("data", {})
-        # Normalise to snake_case for db layer
-        return {
-            "next_hearing_date": data.get("nextHearingDate"),
-            "status": data.get("caseStatus"),
-        }
+    ) -> Optional[CaseDetail]:
+        """
+        Search by constructing the CNR from the 4 fields.
+        The eCourts search API does not filter by params reliably,
+        so we derive the CNR directly.
+        """
+        cnr = build_cnr(court_code, case_number, year)
+        return self.get_case_by_cnr(cnr)
 
-    def get_orders(self, cnr: str) -> list[Order]:
-        resp = requests.get(
-            f"{BASE_URL}/orders",
-            params={"cnr": cnr},
-            headers=self.headers,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json().get("data", {})
-        return [
-            Order(
-                order_date=o.get("date", o.get("orderDate", "")),
-                order_number=o.get("orderNumber", o.get("number", "")),
-                pdf_url=o.get("pdfUrl", o.get("pdf_url", "")),
+    def _parse_case_detail(self, cnr: str, raw: dict) -> CaseDetail:
+        judges = raw.get("judges", [])
+        petitioners = raw.get("petitioners", [])
+        respondents = raw.get("respondents", [])
+
+        hearings = [
+            HearingRecord(
+                hearing_date=h.get("hearingDate", h.get("businessOnDate", "")),
+                purpose=h.get("purposeOfListing", ""),
+                outcome=h.get("businessOnDate", ""),
             )
-            for o in data.get("orders", [])
+            for h in raw.get("historyOfCaseHearings", [])
+            if h.get("hearingDate") or h.get("businessOnDate")
         ]
+
+        orders = [
+            Order(
+                order_date=o.get("orderDate", ""),
+                order_number=str(i + 1),
+                pdf_url=o.get("orderUrl", ""),
+            )
+            for i, o in enumerate(raw.get("judgmentOrders", []))
+        ]
+
+        filing_date = raw.get("filingDate")
+        cnr_year = int(cnr[-4:]) if len(cnr) >= 4 and cnr[-4:].isdigit() else None
+        year = cnr_year or (int(filing_date[:4]) if filing_date else 0)
+
+        return CaseDetail(
+            cnr=cnr,
+            court_code=raw.get("cnrCourtCode", raw.get("courtComplexCode", "")),
+            case_type=raw.get("caseType", raw.get("caseTypeRaw", "")),
+            case_number=raw.get("cnrCaseNumber", raw.get("registrationNumber", "")),
+            year=year,
+            court_name=raw.get("courtName", ""),
+            state=raw.get("state", raw.get("stateCode", "")),
+            petitioner=", ".join(petitioners) if petitioners else "",
+            respondent=", ".join(respondents) if respondents else "",
+            judge=", ".join(judges) if judges else "",
+            filing_date=filing_date,
+            next_hearing_date=raw.get("nextHearingDate"),
+            court_status=raw.get("caseStatus", ""),
+            orders=orders,
+            hearings=hearings,
+        )
+
+    def refresh_case_by_cnr(self, cnr: str) -> Optional[CaseDetail]:
+        return self.get_case_by_cnr(cnr)
 
     def get_order_summary(self, cnr: str, order_number: str) -> str:
         resp = requests.get(
@@ -141,17 +148,6 @@ class EcourtsClient:
         )
         resp.raise_for_status()
         return resp.json().get("data", {}).get("summary", "")
-
-    def get_hearing_history(self, cnr: str) -> list[HearingRecord]:
-        detail = self.get_case_detail(cnr)
-        return [
-            HearingRecord(
-                hearing_date=h.get("date", h.get("hearingDate", "")),
-                purpose=h.get("purpose", ""),
-                outcome=h.get("outcome", ""),
-            )
-            for h in detail.get("hearingHistory", detail.get("hearing_history", []))
-        ]
 
     def get_enums(self) -> dict:
         resp = requests.get(
