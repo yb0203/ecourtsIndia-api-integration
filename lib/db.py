@@ -24,7 +24,7 @@ def get_case_by_id(case_id: str) -> dict | None:
         .select("*")
         .eq("id", case_id)
         .eq("user_id", get_user_id())
-        .single()
+        .maybe_single()
         .execute()
     )
     return response.data
@@ -50,12 +50,12 @@ def update_case(case_id: str, updates: dict) -> dict:
 
 
 def update_case_from_refresh(case_id: str, refresh_data: dict) -> None:
-    updates = {
-        "next_hearing_date": refresh_data.get("next_hearing_date"),
-        "court_status": refresh_data.get("status"),
-        "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
-    }
-    update_case(case_id, {k: v for k, v in updates.items() if v is not None})
+    updates: dict = {"last_refreshed_at": datetime.now(timezone.utc).isoformat()}
+    if refresh_data.get("next_hearing_date"):
+        updates["next_hearing_date"] = refresh_data["next_hearing_date"]
+    if refresh_data.get("status"):
+        updates["court_status"] = refresh_data["status"]
+    update_case(case_id, updates)
 
 
 # ── Orders ─────────────────────────────────────────────────────────────────
@@ -66,6 +66,7 @@ def get_orders_for_case(case_id: str) -> list[dict]:
         client.table("orders")
         .select("*")
         .eq("case_id", case_id)
+        .eq("user_id", get_user_id())
         .order("order_date", desc=True)
         .execute()
     )
