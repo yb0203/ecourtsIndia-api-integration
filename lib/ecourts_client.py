@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_URL = "https://api.ecourtsindia.com/api/partner"
+BASE_URL = "https://webapi.ecourtsindia.com/api/partner"
 
 
 @dataclass
@@ -23,6 +23,7 @@ class CaseSearchResult:
     filing_date: Optional[str]
     next_hearing_date: Optional[str]
     court_status: str
+    cnr: Optional[str] = None
 
 
 @dataclass
@@ -61,40 +62,35 @@ class EcourtsClient:
         )
         resp.raise_for_status()
         data = resp.json()
-        if not data.get("results"):
+        results = data.get("data", {}).get("results", [])
+        if not results:
             return None
-        r = data["results"][0]
+        r = results[0]
         return CaseSearchResult(
-            court_code=court_code,
-            case_type=case_type,
+            court_code=r.get("courtCode", court_code),
+            case_type=r.get("caseType", case_type),
             case_number=case_number,
             year=year,
-            court_name=r.get("court_name", ""),
-            state=r.get("state", ""),
-            petitioner=r.get("petitioner", ""),
-            respondent=r.get("respondent", ""),
-            judge=r.get("judge", ""),
-            filing_date=r.get("filing_date"),
-            next_hearing_date=r.get("next_hearing_date"),
-            court_status=r.get("status", ""),
+            court_name=r.get("courtName", ""),
+            state=r.get("stateCode", ""),
+            petitioner=", ".join(r.get("petitioners", [])),
+            respondent=", ".join(r.get("respondents", [])),
+            judge=", ".join(r.get("judges", [])),
+            filing_date=r.get("filingDate"),
+            next_hearing_date=r.get("nextHearingDate"),
+            court_status=r.get("caseStatus", ""),
+            cnr=r.get("cnr"),
         )
 
-    def get_case_detail(
-        self, court_code: str, case_type: str, case_number: str, year: int
-    ) -> dict:
+    def get_case_detail(self, cnr: str) -> dict:
         resp = requests.get(
             f"{BASE_URL}/case",
-            params={
-                "court_code": court_code,
-                "case_type": case_type,
-                "case_number": case_number,
-                "year": year,
-            },
+            params={"cnr": cnr},
             headers=self.headers,
             timeout=30,
         )
         resp.raise_for_status()
-        return resp.json()
+        return resp.json().get("data", {})
 
     def refresh_case(
         self, court_code: str, case_type: str, case_number: str, year: int
@@ -102,75 +98,64 @@ class EcourtsClient:
         resp = requests.post(
             f"{BASE_URL}/refresh",
             json={
-                "court_code": court_code,
-                "case_type": case_type,
-                "case_number": case_number,
+                "courtCode": court_code,
+                "caseType": case_type,
+                "caseNumber": case_number,
                 "year": year,
             },
             headers=self.headers,
             timeout=30,
         )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json().get("data", {})
+        # Normalise to snake_case for db layer
+        return {
+            "next_hearing_date": data.get("nextHearingDate"),
+            "status": data.get("caseStatus"),
+        }
 
-    def get_orders(
-        self, court_code: str, case_type: str, case_number: str, year: int
-    ) -> list[Order]:
+    def get_orders(self, cnr: str) -> list[Order]:
         resp = requests.get(
             f"{BASE_URL}/orders",
-            params={
-                "court_code": court_code,
-                "case_type": case_type,
-                "case_number": case_number,
-                "year": year,
-            },
+            params={"cnr": cnr},
             headers=self.headers,
             timeout=30,
         )
         resp.raise_for_status()
-        data = resp.json()
+        data = resp.json().get("data", {})
         return [
             Order(
-                order_date=o.get("date", ""),
-                order_number=o.get("number", ""),
-                pdf_url=o.get("pdf_url", ""),
+                order_date=o.get("date", o.get("orderDate", "")),
+                order_number=o.get("orderNumber", o.get("number", "")),
+                pdf_url=o.get("pdfUrl", o.get("pdf_url", "")),
             )
             for o in data.get("orders", [])
         ]
 
-    def get_order_summary(self, order_number: str, court_code: str) -> str:
+    def get_order_summary(self, cnr: str, order_number: str) -> str:
         resp = requests.get(
             f"{BASE_URL}/order-summary",
-            params={"order_number": order_number, "court_code": court_code},
+            params={"cnr": cnr, "orderNumber": order_number},
             headers=self.headers,
             timeout=60,
         )
         resp.raise_for_status()
-        return resp.json().get("summary", "")
+        return resp.json().get("data", {}).get("summary", "")
 
-    def get_hearing_history(
-        self, court_code: str, case_type: str, case_number: str, year: int
-    ) -> list[HearingRecord]:
-        detail = self.get_case_detail(court_code, case_type, case_number, year)
+    def get_hearing_history(self, cnr: str) -> list[HearingRecord]:
+        detail = self.get_case_detail(cnr)
         return [
             HearingRecord(
-                hearing_date=h.get("date", ""),
+                hearing_date=h.get("date", h.get("hearingDate", "")),
                 purpose=h.get("purpose", ""),
                 outcome=h.get("outcome", ""),
             )
-            for h in detail.get("hearing_history", [])
+            for h in detail.get("hearingHistory", detail.get("hearing_history", []))
         ]
-
-    def get_court_structure(self) -> dict:
-        resp = requests.get(
-            f"{BASE_URL}/court-structure", headers=self.headers, timeout=30
-        )
-        resp.raise_for_status()
-        return resp.json()
 
     def get_enums(self) -> dict:
         resp = requests.get(
             f"{BASE_URL}/enums", headers=self.headers, timeout=30
         )
         resp.raise_for_status()
-        return resp.json()
+        return resp.json().get("data", {}).get("enums", {})

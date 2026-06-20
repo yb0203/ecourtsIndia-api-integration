@@ -15,13 +15,17 @@ st.title("Add New Case")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_court_options() -> dict[str, str]:
-    """Returns {display_name: court_code}. Tries API first, falls back to common courts."""
+    """Returns {display_name: court_code} from API enums."""
     try:
         api = EcourtsClient()
-        data = api.get_court_structure()
-        courts = data.get("courts", [])
+        enums = api.get_enums()
+        courts = enums.get("courtCode", [])
         if courts:
-            return {c["name"]: c["code"] for c in courts}
+            return {
+                c["description"]: c["code"]
+                for c in courts
+                if c["code"] != "UNKNOWN"
+            }
     except Exception:
         pass
     return {
@@ -35,42 +39,32 @@ def load_court_options() -> dict[str, str]:
         "Commercial Court Hyderabad": "COMHYD",
         "Commercial Court Raipur": "COMRPR",
         "District Court Visakhapatnam": "DCVIZ",
-        "District Court Gajuwaka Visakhapatnam": "DCGAJ",
-        "NCLT Calcutta": "NCLTCAL",
-        "NCLAT New Delhi": "NCLAT",
-        "CGIT Dhanbad": "CGITDHN",
-        "MSME Facilitation Council Ranchi": "MSMERN",
-        "MSME Facilitation Council Bhavnagar": "MSMEBHV",
-        "MP State Tribunal Bhopal": "MPSTB",
     }
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_case_type_options() -> list[str]:
-    """Returns list of case types. Tries API first, falls back to common types."""
+def load_case_type_options() -> list[tuple[str, str]]:
+    """Returns list of (display_label, code) tuples from API enums."""
     try:
         api = EcourtsClient()
-        data = api.get_enums()
-        case_types = data.get("case_types", [])
-        if case_types:
-            return sorted(case_types)
+        enums = api.get_enums()
+        types = enums.get("caseType", [])
+        if types:
+            return sorted(
+                [(f"{c['description']} ({c['code']})", c["code"])
+                 for c in types if c["code"] != "UNKNOWN"],
+                key=lambda x: x[0],
+            )
     except Exception:
         pass
     return [
-        "AP COM",
-        "Arb. MJC",
-        "CAOP",
-        "CEP",
-        "Company Appeal (AT) (Insolvency)",
-        "COP",
-        "CS",
-        "EP",
-        "EPFA",
-        "I.A.",
-        "JHMSEFC",
-        "OMP (COMM.)",
-        "OMP (ENF.) (COMM.)",
-        "W.P",
+        ("Arbitration Case (Arb)", "Arb"),
+        ("Arbitration Petition (Arb_Pet)", "Arb_Pet"),
+        ("Civil Appeal (CA)", "CA"),
+        ("Company Petition (COP)", "COP"),
+        ("Execution Petition (EP)", "EP"),
+        ("Original Miscellaneous Petition Commercial (OMP_COMM)", "OMP_COMM"),
+        ("Writ Petition (WP)", "WP"),
     ]
 
 
@@ -91,9 +85,11 @@ with st.form("case_search"):
         )
         case_number = st.text_input("Case Number", placeholder="e.g. 422")
     with col2:
-        case_type = st.selectbox(
+        case_type_labels = [label for label, _ in case_type_options]
+        case_type_codes  = [code  for _, code  in case_type_options]
+        selected_type_label = st.selectbox(
             "Case Type",
-            options=case_type_options,
+            options=case_type_labels,
             index=None,
             placeholder="Select case type…",
         )
@@ -102,11 +98,12 @@ with st.form("case_search"):
     submitted = st.form_submit_button("Search eCourts", type="primary", use_container_width=True)
 
 if submitted:
-    if not all([selected_court_name, case_type, case_number, year]):
+    if not all([selected_court_name, selected_type_label, case_number, year]):
         st.error("All four fields are required.")
         st.stop()
 
     court_code = court_options[selected_court_name]
+    case_type  = case_type_codes[case_type_labels.index(selected_type_label)]
 
     try:
         api = EcourtsClient()
@@ -158,6 +155,7 @@ if "search_result" in st.session_state:
 
     if save_submitted:
         case_data = {
+            "cnr": result.cnr,
             "court_code": result.court_code,
             "case_type": result.case_type,
             "case_number": result.case_number,
@@ -182,15 +180,14 @@ if "search_result" in st.session_state:
             api = EcourtsClient()
             saved = save_case(case_data)
 
-            hearings = api.get_hearing_history(
-                result.court_code, result.case_type, result.case_number, result.year
-            )
-            if hearings:
-                upsert_hearing_history(
-                    saved["id"],
-                    [{"hearing_date": h.hearing_date, "purpose": h.purpose, "outcome": h.outcome}
-                     for h in hearings],
-                )
+            if result.cnr:
+                hearings = api.get_hearing_history(result.cnr)
+                if hearings:
+                    upsert_hearing_history(
+                        saved["id"],
+                        [{"hearing_date": h.hearing_date, "purpose": h.purpose, "outcome": h.outcome}
+                         for h in hearings],
+                    )
 
             del st.session_state["search_result"]
             st.success("Case saved successfully!")

@@ -45,25 +45,27 @@ with header_col3:
     st.markdown(f"**Local Counsel:** {case.get('local_counsel', '—')}")
 
 if st.button("🔄 Refresh Case"):
-    try:
-        api = EcourtsClient()
-        refresh_data = api.refresh_case(
-            case["court_code"], case["case_type"], case["case_number"], case["year"]
-        )
-        update_case_from_refresh(case["id"], refresh_data)
-        hearings = api.get_hearing_history(
-            case["court_code"], case["case_type"], case["case_number"], case["year"]
-        )
-        if hearings:
-            upsert_hearing_history(
-                case["id"],
-                [{"hearing_date": h.hearing_date, "purpose": h.purpose, "outcome": h.outcome}
-                 for h in hearings],
+    cnr = case.get("cnr")
+    if not cnr:
+        st.warning("This case has no CNR number — cannot refresh from eCourts.")
+    else:
+        try:
+            api = EcourtsClient()
+            refresh_data = api.refresh_case(
+                case["court_code"], case["case_type"], case["case_number"], case["year"]
             )
-        st.success("Refreshed.")
-        st.rerun()
-    except Exception as e:
-        st.error(f"Refresh failed: {e}")
+            update_case_from_refresh(case["id"], refresh_data)
+            hearings = api.get_hearing_history(cnr)
+            if hearings:
+                upsert_hearing_history(
+                    case["id"],
+                    [{"hearing_date": h.hearing_date, "purpose": h.purpose, "outcome": h.outcome}
+                     for h in hearings],
+                )
+            st.success("Refreshed.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Refresh failed: {e}")
 
 st.divider()
 
@@ -83,12 +85,11 @@ with tab_hearings:
 
 # ── Orders tab ────────────────────────────────────────────────────────────
 with tab_orders:
-    if st.button("Fetch Orders from eCourts (₹1.25)"):
+    cnr = case.get("cnr")
+    if st.button("Fetch Orders from eCourts (₹1.25)", disabled=not cnr):
         try:
             api = EcourtsClient()
-            orders_from_api = api.get_orders(
-                case["court_code"], case["case_type"], case["case_number"], case["year"]
-            )
+            orders_from_api = api.get_orders(cnr)
             upsert_orders(
                 case_id,
                 [{"order_date": o.order_date, "order_number": o.order_number, "pdf_url": o.pdf_url}
@@ -98,6 +99,8 @@ with tab_orders:
             st.rerun()
         except Exception as e:
             st.error(f"Failed to fetch orders: {e}")
+    if not cnr:
+        st.caption("No CNR number — orders cannot be fetched for this case.")
 
     orders = get_orders_for_case(case_id)
     if not orders:
@@ -117,7 +120,7 @@ with tab_orders:
                     if o_col2.button(f"Get AI Summary (₹2.50)", key=f"summary_{order['id']}"):
                         try:
                             api = EcourtsClient()
-                            s = api.get_order_summary(order["order_number"], case["court_code"])
+                            s = api.get_order_summary(cnr, order["order_number"])
                             update_order_summary(order["id"], s)
                             st.rerun()
                         except Exception as e:
