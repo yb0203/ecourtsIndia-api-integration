@@ -20,28 +20,44 @@ def get_client() -> Client:
     scope — so the auth token of one browser session can never leak into another
     session that happens to share the same server process.
 
-    When a user session exists, the client's PostgREST requests are
-    authenticated with that user's JWT, so the database sees ``auth.uid()`` and
-    RLS policies (``auth.uid() = user_id``) pass. Without this, every DB call
-    runs as the ``anon`` role with ``auth.uid()`` NULL, which makes every RLS
-    policy fail — selects return empty and inserts/updates are rejected. The
-    token is re-applied on every call because Streamlit re-runs the script on
-    each interaction.
+    When a user session is present, the client's data requests are authenticated
+    with that user's JWT, so the database sees ``auth.uid()`` and the RLS
+    policies (``auth.uid() = user_id``) pass. Without this, every DB call runs as
+    the ``anon`` role with ``auth.uid()`` NULL, which makes every RLS policy fail
+    — selects return empty and inserts/updates are rejected.
+
+    The token is re-applied only when it changes (login / refresh / logout),
+    which avoids rebuilding the underlying HTTP client on every Streamlit rerun.
     """
     client: Client | None = st.session_state.get("_sb_client")
     if client is None:
         client = _create_client()
         st.session_state["_sb_client"] = client
+        st.session_state["_sb_token"] = None  # default header is the anon key
 
-    _apply_auth(client)
+    session = st.session_state.get("session")
+    desired = session.access_token if session is not None else None
+    if st.session_state.get("_sb_token") != desired:
+        _apply_token(client, desired)
+        st.session_state["_sb_token"] = desired
+
     return client
 
 
-def _apply_auth(client: Client) -> None:
-    """Keep the PostgREST Authorization header in sync with the session token."""
-    session = st.session_state.get("session")
-    if session is not None:
-        client.postgrest.auth(session.access_token)
-    else:
-        # Reset to the anon key after sign-out so a stale token isn't reused.
-        client.postgrest.auth(os.environ["SUPABASE_ANON_KEY"])
+def _apply_token(client: Client, token: str | None) -> None:
+    """
+    Apply ``token`` to the client's data layer (falling back to the anon key).
+
+    This mirrors what supabase-py does internally on an auth state change
+    (``_listen_to_auth_events``): update the shared Authorization header and drop
+    the lazily-built sub-clients so they are rebuilt with the new header. Setting
+    ``postgrest.auth()`` alone does NOT work — it writes to a header dict that
+    the live HTTP session does not read.
+    """
+    bearer = token or os.environ["SUPABASE_ANON_KEY"]
+    client.options.headers["Authorization"] = f"Bearer {bearer}"
+    client._postgrest = None
+    if hasattr(client, "_storage"):
+        client._storage = None
+    if hasattr(client, "_functions"):
+        client._functions = None

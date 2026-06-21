@@ -69,9 +69,10 @@ def logout() -> None:
     client = get_client()
     client.auth.sign_out()
     st.session_state.pop("session", None)
-    # Drop the cached per-session client so the next call rebuilds a clean,
-    # unauthenticated one instead of reusing a client with a stale token.
+    # Drop the cached per-session client (and its applied-token marker) so the
+    # next call rebuilds a clean, unauthenticated one with no stale token.
     st.session_state.pop("_sb_client", None)
+    st.session_state.pop("_sb_token", None)
 
 
 def render_login_page() -> None:
